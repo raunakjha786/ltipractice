@@ -1,0 +1,6 @@
+  emp_id,first_name,last_name,department,salary,manager_id
+101,John,Doe,IT,60000,201
+102,Alice,Smith,HR,55000,201
+103,Bob,Brown,Finance,65000,202
+104,Emma,Wilson,IT,72000,201
+105,David,Clark,Sales,50000,203

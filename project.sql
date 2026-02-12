@@ -1,0 +1,964 @@
+CREATE OR REPLACE DATABASE REDBUS_ANALYTICS_DB;
+
+
+USE DATABASE REDBUS_ANALYTICS_DB;
+
+CREATE OR REPLACE SCHEMA RAW;
+CREATE OR REPLACE SCHEMA DW;
+CREATE OR REPLACE SCHEMA OPS;
+
+
+use schema raw
+
+
+CREATE OR REPLACE ROLE ROLE_REDBUS_INGEST;
+CREATE OR REPLACE ROLE ROLE_REDBUS_ETL;
+CREATE OR REPLACE ROLE ROLE_REDBUS_ANALYST;
+
+
+
+GRANT USAGE ON DATABASE REDBUS_ANALYTICS_DB TO ROLE ROLE_REDBUS_INGEST;
+GRANT USAGE ON SCHEMA RAW TO ROLE ROLE_REDBUS_INGEST;
+
+CREATE OR REPLACE TABLE RAW_CUSTOMERS (
+    CUSTOMER_ID        STRING,
+    FIRST_NAME         STRING,
+    LAST_NAME          STRING,
+    EMAIL              STRING,
+    PHONE              STRING,
+    SEGMENT            STRING,
+    CITY               STRING,
+    STATE              STRING,
+    COUNTRY            STRING,
+    UPDATED_AT         STRING,   -- keep STRING in RAW
+
+    -- Metadata
+    LOAD_TS            TIMESTAMP,
+    SOURCE_FILE_NAME   STRING
+);
+
+
+
+
+CREATE OR REPLACE TABLE RAW_ROUTES (
+    ROUTE_ID          STRING,
+    SOURCE_CITY       STRING,
+    DEST_CITY         STRING,
+    DISTANCE_KM       STRING,
+    SOURCE_STATE      STRING,
+    DEST_STATE        STRING,
+    REGION            STRING,
+    EFFECTIVE_FROM    STRING,
+    STATUS            STRING,
+
+    -- Metadata
+    LOAD_TS           TIMESTAMP,
+    SOURCE_FILE_NAME  STRING
+);
+
+
+
+CREATE OR REPLACE TABLE RAW_BUSES (
+    BUS_ID            STRING,
+    OPERATOR_NAME     STRING,
+    BUS_TYPE          STRING,
+    SEAT_CAPACITY     STRING,
+    BUS_MODEL         STRING,
+    REGISTRATION_NO   STRING,
+    IN_SERVICE_DATE   STRING,
+    STATUS            STRING,
+    UPDATED_AT        STRING,
+
+    -- Metadata
+    LOAD_TS           TIMESTAMP,
+    SOURCE_FILE_NAME  STRING
+);
+
+
+
+CREATE OR REPLACE TABLE RAW_BOOKINGS (
+    BOOKING_ID         STRING,
+    BOOKING_LINE_ID    STRING,
+    BOOKING_DATE       STRING,
+    CUSTOMER_ID        STRING,
+    ROUTE_ID           STRING,
+    BUS_ID             STRING,
+    JOURNEY_DATE       STRING,
+    DEPARTURE_TIME     STRING,
+    ARRIVAL_TIME       STRING,
+    SEAT_TYPE          STRING,
+    SEAT_NO            STRING,
+    PASSENGER_COUNT    STRING,
+    FARE_AMOUNT        STRING,
+    DISCOUNT_PCT       STRING,
+    PAYMENT_MODE       STRING,
+    BOOKING_STATUS     STRING,
+
+    -- Metadata
+    LOAD_TS            TIMESTAMP,
+    SOURCE_FILE_NAME   STRING
+);
+
+
+create or replace storage integration S3_REDBUS_INT
+  type = external_stage
+  storage_provider = s3
+  enabled = true
+  storage_aws_role_arn = 'arn:aws:iam::498504718091:role/raunakroles'
+  storage_allowed_locations = ('s3://raunakjhaa/redbus_analytics/');
+
+desc integration S3_REDBUS_INT
+
+
+CREATE OR REPLACE FILE FORMAT FF_REDBUS_CSV
+TYPE = CSV
+FIELD_DELIMITER = ','
+SKIP_HEADER = 1
+TRIM_SPACE = TRUE
+NULL_IF = ('NULL', 'null', '')
+EMPTY_FIELD_AS_NULL = TRUE;
+
+
+
+
+CREATE OR REPLACE STAGE STG_REDBUS
+URL = 's3://raunakjhaa/redbus_analytics/landing/'
+STORAGE_INTEGRATION = S3_REDBUS_INT
+FILE_FORMAT = FF_REDBUS_CSV;
+
+list @stg_redbus
+
+
+CREATE OR REPLACE PIPE PIPE_RAW_CUSTOMERS
+AUTO_INGEST = TRUE
+AS
+COPY INTO RAW_CUSTOMERS
+FROM (
+    SELECT
+        $1,  -- CUSTOMER_ID
+        $2,  -- FIRST_NAME
+        $3,  -- LAST_NAME
+        $4,  -- EMAIL
+        $5,  -- PHONE
+        $6,  -- SEGMENT
+        $7,  -- CITY
+        $8,  -- STATE
+        $9,  -- COUNTRY
+        $10, -- UPDATED_AT
+        CURRENT_TIMESTAMP,
+        METADATA$FILENAME
+    FROM @STG_REDBUS/customers/
+)
+ON_ERROR = CONTINUE;
+
+
+show pipes
+
+select * from raw_customers
+truncate table raw_customers
+
+SELECT COUNT(*) FROM RAW_CUSTOMERS;
+
+ALTER PIPE PIPE_RAW_CUSTOMERS REFRESH;
+
+
+SELECT COUNT(*) FROM RAW_CUSTOMERS;
+
+select * from raw_routes
+truncate table raw_routes
+
+CREATE OR REPLACE PIPE PIPE_RAW_ROUTES
+AUTO_INGEST = TRUE
+AS
+COPY INTO RAW_ROUTES
+FROM (
+    SELECT
+        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+        CURRENT_TIMESTAMP,
+        METADATA$FILENAME
+    FROM @STG_REDBUS/routes/
+)
+ON_ERROR = CONTINUE;
+
+
+select * from raw_routes
+
+CREATE OR REPLACE PIPE PIPE_RAW_BUSES
+AUTO_INGEST = TRUE
+AS
+COPY INTO RAW_BUSES
+FROM (
+    SELECT
+        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+        CURRENT_TIMESTAMP,
+        METADATA$FILENAME
+    FROM @STG_REDBUS/buses/
+)
+ON_ERROR = CONTINUE;
+
+select * from raw_buses
+truncate table raw_buses
+
+CREATE OR REPLACE PIPE PIPE_RAW_BOOKINGS
+AUTO_INGEST = TRUE
+AS
+COPY INTO RAW_BOOKINGS
+FROM (
+    SELECT
+        $1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10, $11,
+        $12, $13, $14, $15, $16,
+        CURRENT_TIMESTAMP,
+        METADATA$FILENAME
+    FROM @STG_REDBUS/bookings/
+)
+ON_ERROR = CONTINUE;
+
+select * from raw_bookings
+truncate table raw_bookings
+--------------dim date in dw schema
+
+
+
+
+CREATE OR REPLACE TABLE DIM_DATE (
+  SK_DATE NUMBER AUTOINCREMENT,
+  DATE_VALUE DATE,
+  YEAR NUMBER,
+  QUARTER NUMBER,
+  MONTH NUMBER,
+  WEEK_OF_YEAR NUMBER,
+  IS_WEEKEND STRING
+);
+
+
+
+select * from DIM_DATe
+truncate dim_date
+drop table dim_date
+
+CREATE OR REPLACE TABLE REDBUS_ANALYTICS_DB.DW.DIM_ROUTE (
+    SK_ROUTE        NUMBER AUTOINCREMENT START 1 INCREMENT 1,   -- Surrogate Key (PK)
+    ROUTE_ID        STRING NOT NULL,                              -- Business Key
+    SOURCE_CITY     STRING,
+    DEST_CITY       STRING,
+    DISTANCE_KM     NUMBER(10,2),
+    REGION          STRING,
+    SOURCE_STATE    STRING,
+    DEST_STATE      STRING,
+    STATUS          STRING,
+
+    LOAD_TS         TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+
+    CONSTRAINT PK_DIM_ROUTE PRIMARY KEY (SK_ROUTE)
+);
+
+
+UPDATE RAW_ROUTES
+SET DEST_CITY = 'Mumbai'
+WHERE ROUTE_ID = 'RT005';
+
+truncate dim_route
+select * from dim_route
+
+select * from raw_routes
+
+UPDATE DIM_ROUTES
+SET DEST_CITY = 'Mumbai'
+WHERE ROUTE_ID = 'RT005';
+
+truncate dim_route
+
+------------------customers cleaned in dw rejected in ops schema
+select * from cleaned_customers
+select * from rejected_customers
+
+
+---------route cleaned in dw and rejected in ops schema
+
+select * from cleaned_routes
+truncate cleaned_routes
+drop table cleaned_routes
+select * from rejected_routes
+drop  table rejected_routes
+truncate rejected_routes
+
+select * from raw_routes
+------------------buses cleaned in dw rejected in ops
+
+SELECT * FROM CLEANED_BUSES
+
+SELECT * FROM REJECTED_BUSES
+
+
+
+
+---bookings cleaned rejected in raw schema
+
+CREATE OR REPLACE TABLE RAW_BOOKINGS (
+    BOOKING_ID         STRING,
+    BOOKING_LINE_ID    STRING,
+    BOOKING_DATE       STRING,
+    CUSTOMER_ID        STRING,
+    ROUTE_ID           STRING,
+    BUS_ID             STRING,
+    JOURNEY_DATE       STRING,
+    DEPARTURE_TIME     STRING,
+    ARRIVAL_TIME       STRING,
+    SEAT_TYPE          STRING,
+    SEAT_NO            STRING,
+    PASSENGER_COUNT    STRING,
+    FARE_AMOUNT        STRING,
+    DISCOUNT_PCT       STRING,
+    PAYMENT_MODE       STRING,
+    BOOKING_STATUS     STRING,
+
+    -- Metadata
+    LOAD_TS            TIMESTAMP,
+    SOURCE_FILE_NAME   STRING
+);
+
+--rejected bookings is in raw schema
+select * from rejected_bookings
+
+select * from cleaned_bookings
+
+
+
+
+
+
+
+----------------------------dimension and fact tables 
+select * from dim_customers
+drop table dim_customer
+
+
+
+CREATE OR REPLACE TABLE DIM_CUSTOMERS (
+    SK_CUSTOMER        NUMBER AUTOINCREMENT START 1 INCREMENT 1,
+
+    CUSTOMER_ID        STRING,   -- Business Key
+    CUSTOMER_NAME      STRING,
+    EMAIL              STRING,
+    PHONE              STRING,
+
+    SEGMENT            STRING,
+    CITY               STRING,
+    STATE              STRING,
+
+    EFF_START_DATE     DATE,
+    EFF_END_DATE       DATE,
+    IS_CURRENT         BOOLEAN,
+
+    LOAD_TS            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT PK_DIM_CUSTOMER PRIMARY KEY (SK_CUSTOMER)
+);
+
+
+
+select * from dim_customers
+
+
+--------- bus dimtable
+
+CREATE OR REPLACE TABLE DIM_BUS (
+    SK_BUS             NUMBER AUTOINCREMENT START 1 INCREMENT 1,
+
+    BUS_ID             STRING,   -- Business Key
+    OPERATOR           STRING,
+    BUS_TYPE           STRING,
+    SEATS              NUMBER,
+
+    MODEL              STRING,
+    REG_NO             STRING,
+    STATUS             STRING,
+
+    EFF_START_DATE     DATE,
+    EFF_END_DATE       DATE,
+    IS_CURRENT         BOOLEAN,
+
+    LOAD_TS            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT PK_DIM_BUS PRIMARY KEY (SK_BUS)
+);
+
+SELECT * FROM DIM_BUS
+
+
+CREATE OR REPLACE TABLE DIM_ROUTE (
+    SK_ROUTE        NUMBER AUTOINCREMENT START 1 INCREMENT 1,
+
+    ROUTE_ID        STRING,   -- Business Key
+    SOURCE_CITY     STRING,
+    DEST_CITY       STRING,
+    DISTANCE_KM     NUMBER,
+    REGION          STRING,
+
+    SOURCE_STATE    STRING,
+    DEST_STATE      STRING,
+    STATUS          STRING,
+
+    LOAD_TS         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT PK_DIM_ROUTE PRIMARY KEY (SK_ROUTE)
+);
+
+
+SELECT * FROM DIM_ROUTE
+
+-------- dim date
+
+CREATE OR REPLACE TABLE DIM_DATE (
+    SK_DATE        NUMBER PRIMARY KEY,
+    DATE_VALUE     DATE UNIQUE,
+
+    YEAR           NUMBER,
+    QUARTER        NUMBER,
+    MONTH          NUMBER,
+    MONTH_NAME     STRING,
+
+    WEEK_OF_YEAR   NUMBER,
+    DAY_OF_MONTH   NUMBER,
+    DAY_OF_WEEK    NUMBER,
+    DAY_NAME       STRING,
+
+    IS_WEEKEND     BOOLEAN
+); 
+
+
+select * from dim_date
+
+select * from cleaned_customers
+
+select * from fact_booking
+
+
+--- fact table 
+
+CREATE OR REPLACE TABLE FACT_BOOKING (
+    BOOKING_ID         STRING,
+    BOOKING_LINE_ID    NUMBER,
+
+    SK_BOOKING_DATE    NUMBER,
+    SK_JOURNEY_DATE    NUMBER,
+    SK_CUSTOMER        NUMBER,
+    SK_ROUTE           NUMBER,
+    SK_BUS             NUMBER,
+
+    PASSENGER_COUNT    NUMBER,
+    FARE_AMOUNT        NUMBER,
+    DISCOUNT_PCT       NUMBER,
+    NET_AMOUNT         NUMBER,
+
+    STATUS             STRING,
+    PAYMENT_MODE       STRING,
+
+    LOAD_TS            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT PK_FACT_BOOKING PRIMARY KEY (BOOKING_ID, BOOKING_LINE_ID)
+);
+
+
+select * from fact_booking
+
+SELECT * FROM FACT_BOOKING
+DROP TABLE FACT_BOOKING
+
+
+
+
+-----DYNAMIC TABLES 
+
+CREATE OR REPLACE DYNAMIC TABLE DT_FACT_BOOKING
+TARGET_LAG = '5 MINUTES'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT *
+FROM FACT_BOOKING;
+
+
+
+CREATE OR REPLACE DYNAMIC TABLE DT_DIM_CUSTOMER
+TARGET_LAG = '1 HOUR'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT *
+FROM DIM_CUSTOMERS
+WHERE IS_CURRENT = 1;
+
+
+CREATE OR REPLACE DYNAMIC TABLE DT_DIM_ROUTE
+TARGET_LAG = '1 HOUR'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT *
+FROM DIM_ROUTE;
+
+
+
+CREATE OR REPLACE DYNAMIC TABLE DT_DIM_BUS
+TARGET_LAG = '1 HOUR'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT *
+FROM DIM_BUS
+WHERE IS_CURRENT = 1;
+
+
+CREATE OR REPLACE DYNAMIC TABLE DT_DIM_DATE
+TARGET_LAG = '24 HOURS'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT *
+FROM DIM_DATE;
+
+
+SELECT * FROM DIM_DATE LIMIT 1;
+
+
+---STAR SCHEMA NOW 
+show dynamic tables
+CREATE OR REPLACE DYNAMIC TABLE DT_BOOKING_ANALYTICS
+TARGET_LAG = '5 MINUTES'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT
+    f.BOOKING_ID,
+    f.BOOKING_LINE_ID,
+
+    d.DATE_VALUE        AS BOOKING_DATE,
+
+    r.ROUTE_ID,
+    r.SOURCE_CITY,
+    r.DEST_CITY,
+
+    b.BUS_ID,
+    b.OPERATOR,         
+    b.BUS_TYPE,         
+    b.SEATS,            
+
+    c.CUSTOMER_ID,
+
+    f.PASSENGER_COUNT,
+    f.FARE_AMOUNT,
+    f.DISCOUNT_PCT,
+    f.NET_AMOUNT,
+    f.STATUS,
+    f.PAYMENT_MODE
+
+FROM FACT_BOOKING f
+JOIN DIM_DATE d
+    ON f.SK_BOOKING_DATE = d.SK_DATE
+JOIN DIM_ROUTE r
+    ON f.SK_ROUTE = r.SK_ROUTE
+JOIN DIM_BUS b
+    ON f.SK_BUS = b.SK_BUS
+   AND b.IS_CURRENT = 1
+JOIN DIM_CUSTOMERS c
+    ON f.SK_CUSTOMER = c.SK_CUSTOMER
+   AND c.IS_CURRENT = 1;
+
+
+SELECT * FROM DT_BOOKING_ANALYTICS
+
+SELECT * FROM DIM_BUS
+--------------------- KPI we have to do for Streamlit
+
+-- KPI 1 EXECUTIVE SUMMARY 
+
+CREATE OR REPLACE DYNAMIC TABLE DT_KPI_EXECUTIVE_SUMMARY
+TARGET_LAG = '5 MINUTES'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT
+    BOOKING_DATE,
+
+    COUNT(DISTINCT BOOKING_ID)            AS TOTAL_BOOKINGS,
+    SUM(PASSENGER_COUNT)                  AS TOTAL_PASSENGERS,
+
+    SUM(FARE_AMOUNT * PASSENGER_COUNT)    AS REVENUE,
+    SUM(NET_AMOUNT)                       AS NET_REVENUE,
+
+    AVG(FARE_AMOUNT)                      AS AVG_FARE,
+
+    COUNT_IF(STATUS = 'CANCELLED')
+      / NULLIF(COUNT(DISTINCT BOOKING_ID), 0) AS CANCELLATION_RATE
+
+FROM DT_BOOKING_ANALYTICS
+GROUP BY BOOKING_DATE;
+
+
+SELECT * FROM DT_KPI_EXECUTIVE_SUMMARY
+
+
+
+
+--KPI 2 ROUTE PERFORMANCE
+CREATE OR REPLACE DYNAMIC TABLE DT_ROUTE_PERFORMANCE
+TARGET_LAG = '10 MINUTES'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT
+    SOURCE_CITY,
+    DEST_CITY,
+
+    COUNT(DISTINCT BOOKING_ID) AS TOTAL_BOOKINGS,
+    SUM(NET_AMOUNT)            AS NET_REVENUE
+
+FROM DT_BOOKING_ANALYTICS
+GROUP BY SOURCE_CITY, DEST_CITY;
+
+
+SELECT * FROM DT_ROUTE_PERFORMANCE
+
+
+
+--KPI 3 : DT OPERATOR/FLEET PEFORMANCE 
+
+
+CREATE OR REPLACE DYNAMIC TABLE DT_OPERATOR_FLEET_PERFORMANCE
+TARGET_LAG = '10 MINUTES'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT
+    OPERATOR,
+    BUS_TYPE,
+
+    COUNT(DISTINCT BOOKING_ID) AS TOTAL_BOOKINGS,
+    SUM(PASSENGER_COUNT)       AS TOTAL_PASSENGERS,
+    SUM(NET_AMOUNT)            AS NET_REVENUE,
+
+    /* Occupancy proxy */
+    AVG(PASSENGER_COUNT / NULLIF(SEATS, 0)) AS OCCUPANCY_RATIO
+
+FROM DT_BOOKING_ANALYTICS
+GROUP BY OPERATOR, BUS_TYPE;
+
+
+SELECT * FROM DT_OPERATOR_FLEET_PERFORMANCE
+select * from dim_bus
+
+
+--KPI 4 : DT BOOKING EXPLORER
+
+CREATE OR REPLACE DYNAMIC TABLE DT_BOOKING_EXPLORER
+TARGET_LAG = '5 MINUTES'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT
+    BOOKING_ID,
+    BOOKING_LINE_ID,
+
+    BOOKING_DATE,
+    SOURCE_CITY,
+    DEST_CITY,
+
+    OPERATOR,
+    BUS_TYPE,
+
+    PASSENGER_COUNT,
+    FARE_AMOUNT,
+    NET_AMOUNT,
+
+    STATUS,
+    PAYMENT_MODE
+
+FROM DT_BOOKING_ANALYTICS;
+
+
+
+
+SELECT * FROM DT_BOOKING_EXPLORER
+
+
+
+show dynamic tables
+
+select * from dt_booking_analytics
+drop table dt_booking_analytics
+
+------------------------------------ dynamic table in one ------------------------------
+
+
+
+
+CREATE OR REPLACE DYNAMIC TABLE DT_BOOKING_ANALYTICS
+TARGET_LAG = '5 MINUTES'
+WAREHOUSE = COMPUTE_WH
+AS
+SELECT
+    -- Grain
+    f.BOOKING_ID,
+    f.BOOKING_LINE_ID,
+
+    -- Dates
+    bd.DATE_VALUE        AS BOOKING_DATE,
+    DAYNAME(jd.DATE_VALUE) AS JOURNEY_WEEKDAY,
+
+    -- Route
+    r.ROUTE_ID,
+    r.SOURCE_CITY,
+    r.DEST_CITY,
+    r.REGION,
+
+    -- Bus / Operator
+    b.BUS_ID,
+    b.OPERATOR,
+    b.BUS_TYPE,
+    b.SEATS,
+
+    -- Customer
+    c.CUSTOMER_ID,
+
+    -- Measures
+    f.PASSENGER_COUNT,
+    f.FARE_AMOUNT,
+    f.DISCOUNT_PCT,
+    f.NET_AMOUNT,
+
+    -- Status flags (VERY IMPORTANT for KPIs)
+    f.STATUS,
+    IFF(f.STATUS = 'CANCELLED', 1, 0) AS IS_CANCELLED,
+
+    -- Occupancy proxy (row-level, not aggregated)
+    f.PASSENGER_COUNT / NULLIF(b.SEATS, 0) AS OCCUPANCY_RATIO
+
+FROM FACT_BOOKING f
+JOIN DIM_DATE bd ON f.SK_BOOKING_DATE = bd.SK_DATE
+JOIN DIM_DATE jd ON f.SK_JOURNEY_DATE = jd.SK_DATE
+JOIN DIM_ROUTE r ON f.SK_ROUTE = r.SK_ROUTE
+JOIN DIM_BUS b ON f.SK_BUS = b.SK_BUS AND b.IS_CURRENT = 1
+JOIN DIM_CUSTOMERS c ON f.SK_CUSTOMER = c.SK_CUSTOMER AND c.IS_CURRENT = 1;
+
+
+
+
+SELECT * FROM DT_BOOKING_ANALYTICS
+
+SELECT * FROM FACT_BOOKING
+
+
+
+-----SEMANTIC VIEWS 
+--executive kpi
+CREATE OR REPLACE VIEW SV_EXECUTIVE_KPI AS
+SELECT
+    BOOKING_DATE,
+
+    COUNT(DISTINCT BOOKING_ID)              AS TOTAL_BOOKINGS,
+    SUM(FARE_AMOUNT)                        AS GROSS_REVENUE,
+    SUM(NET_AMOUNT)                         AS NET_REVENUE,
+
+    AVG(FARE_AMOUNT)                        AS AVG_FARE,
+
+    SUM(IS_CANCELLED) * 1.0
+        / NULLIF(COUNT(*), 0)               AS CANCELLATION_RATE
+
+FROM DT_BOOKING_ANALYTICS
+GROUP BY BOOKING_DATE;
+
+
+SELECT * FROM SV_EXECUTIVE_KPI
+
+
+---------route performance
+
+
+CREATE OR REPLACE VIEW SV_ROUTE_PERFORMANCE AS
+SELECT
+    ROUTE_ID,
+    SOURCE_CITY,
+    DEST_CITY,
+    REGION,
+
+    COUNT(*)                AS BOOKINGS,
+    SUM(NET_AMOUNT)         AS REVENUE
+
+FROM DT_BOOKING_ANALYTICS
+WHERE STATUS <> 'CANCELLED'
+GROUP BY
+    ROUTE_ID,
+    SOURCE_CITY,
+    DEST_CITY,
+    REGION;
+
+select * from sv_route_performance
+
+
+--operator fleet performnace
+
+CREATE OR REPLACE VIEW SV_OPERATOR_FLEET AS
+SELECT
+    OPERATOR,
+    BUS_TYPE,
+
+    COUNT(*)                         AS BOOKINGS,
+    SUM(NET_AMOUNT)                  AS REVENUE,
+    AVG(OCCUPANCY_RATIO)             AS AVG_OCCUPANCY
+
+FROM DT_BOOKING_ANALYTICS
+WHERE STATUS <> 'CANCELLED'
+GROUP BY
+    OPERATOR,
+    BUS_TYPE;
+
+
+
+
+select * from sv_operator_fleet
+
+
+-- kpi 4 booking dril down 
+CREATE OR REPLACE VIEW SV_BOOKING_EXPLORER AS
+SELECT
+    BOOKING_ID,
+    BOOKING_LINE_ID,
+
+    BOOKING_DATE,
+    JOURNEY_WEEKDAY,
+
+    SOURCE_CITY,
+    DEST_CITY,
+    REGION,
+
+    OPERATOR,
+    BUS_TYPE,
+
+    PASSENGER_COUNT,
+    FARE_AMOUNT,
+    DISCOUNT_PCT,
+    NET_AMOUNT,
+
+    STATUS
+
+FROM DT_BOOKING_ANALYTICS;
+
+show views
+
+
+SHOW DYNAMIC TABLES
+
+DROP TABLE DT_DIM_DATE
+DROP TABLE DT_DIM_ROUTE
+DROP TABLE DT_FACT_BOOKING
+DROP TABLE DT_KPI_EXECUTIVE_SUMMARY
+DROP TABLE DT_OPERATOR_FLEET_PERFORMANCE
+DROP TABLE DT_ROUTE_PERFORMANCE
+
+
+
+select * from dim_date
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
